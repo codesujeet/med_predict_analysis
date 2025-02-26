@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+scikit-learn
+spacy
+plotly
+networkx
+scipy
+PyPDF2
+python-docx
