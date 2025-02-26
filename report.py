@@ -20,6 +20,12 @@ import docx
 import warnings
 warnings.filterwarnings('ignore')
 
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
+    nlp = spacy.load("en_core_web_sm")
+
 def read_file_content(file):
     """
     Attempt to read file content with different encodings and handle errors
