@@ -808,5 +808,5 @@ def main():
                                     st.markdown(f"- Lab Trend: {factor['lab']} showing {factor['trend']} pattern")
                                 elif factor['type'] == 'gemini_insight':
                                     st.markdown(f"- Gemini AI Insight: {factor['detail']}")
-                else:
+                                else:
                     st.info("No significant disease predictions found with the current data.")
