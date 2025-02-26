@@ -1,78 +1,38 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
 import spacy
 import re
-from pathlib import Path
-import json
-import plotly.graph_objects as go
-import plotly.express as px
-from scipy.stats import pearsonr
-import networkx as nx
 from collections import defaultdict
 import io
-import PyPDF2
-import docx
-import subprocess
+import json
+import plotly.express as px
+import plotly.graph_objects as go
+import networkx as nx
+from scipy.stats import pearsonr
 import warnings
-import google.generativeai as genai
 warnings.filterwarnings('ignore')
 
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
-    nlp = spacy.load("en_core_web_sm")
-
-def read_file_content(file):
-    """
-    Attempt to read file content with different encodings and handle errors
-    """
-    encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-    content = None
-    
-    for encoding in encodings:
-        try:
-            file.seek(0)
-            content = file.read().decode(encoding)
-            return content
-        except UnicodeDecodeError:
-            continue
-    
-    if content is None:
-        raise ValueError(f"Could not decode file {file.name} with any of the attempted encodings")
+# Load spaCy model with proper error handling
+@st.cache_resource
+def load_spacy_model():
+    try:
+        return spacy.load("en_core_web_sm")
+    except OSError:
+        import subprocess
+        subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
+        return spacy.load("en_core_web_sm")
 
 class MedicalReportAnalyzer:
-    def __init__(self, use_gemini=False):
+    def __init__(self):
         self.reports = []
         self.temporal_data = {}
         self.disease_network = nx.Graph()
-        self.use_gemini = use_gemini
-        self.gemini_model = None
-
-        if use_gemini:
-            try:
-                # Initialize Gemini AI with API key from Streamlit secrets
-                api_key = st.secrets["gemini_api_key"]
-                genai.configure(api_key=api_key)
-                self.gemini_model = genai.GenerativeModel('gemini-pro')
-                st.success("✅ Gemini AI initialized successfully")
-            except Exception as e:
-                st.error(f"❌ Error initializing Gemini AI: {str(e)}")
-                st.error("Make sure your API key is correctly set in .streamlit/secrets.toml file")
-                self.use_gemini = False
-
+        
+        # Initialize NLP
         try:
-            import spacy
-            self.nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            import subprocess
-            subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
-            self.nlp = spacy.load("en_core_web_sm")
+            self.nlp = load_spacy_model()
         except Exception as e:
             st.error(f"Error loading spaCy model: {str(e)}")
             st.error("Please run: pip install spacy && python -m spacy download en_core_web_sm")
@@ -81,9 +41,6 @@ class MedicalReportAnalyzer:
         # Initialize other attributes
         self.disease_patterns = self.load_disease_patterns()
         self.risk_factors = self.load_risk_factors()
-        self.vectorizer = TfidfVectorizer(max_features=1000)
-        self.classifier = RandomForestClassifier(n_estimators=100)
-        self.label_encoder = LabelEncoder()
         
     def load_disease_patterns(self):
         """Load common disease progression patterns"""
@@ -106,40 +63,20 @@ class MedicalReportAnalyzer:
         }
 
     def process_file(self, file, report_date):
-        """Process individual file and extract content"""
+        """Process text file and extract content"""
         try:
-            file_ext = Path(file.name).suffix.lower()
-            content = ""
-            
-            if file_ext == '.pdf':
-                try:
-                    pdf_bytes = io.BytesIO(file.read())
-                    pdf_reader = PyPDF2.PdfReader(pdf_bytes)
-                    content = "\n".join(page.extract_text() for page in pdf_reader.pages)
-                except Exception as e:
-                    raise ValueError(f"Error processing PDF file: {str(e)}")
-            
-            elif file_ext == '.txt':
-                content = read_file_content(file)
-            
-            elif file_ext in ['.doc', '.docx']:
-                try:
-                    doc = docx.Document(io.BytesIO(file.read()))
-                    content = "\n".join(paragraph.text for paragraph in doc.paragraphs)
-                except Exception as e:
-                    raise ValueError(f"Error processing Word file: {str(e)}")
-            
-            else:
-                raise ValueError(f"Unsupported file type: {file_ext}")
-            
+            content = file.getvalue().decode('utf-8')
             return self.process_report(content, report_date, file.name)
-            
-        except Exception as e:
-            raise ValueError(f"Error processing file {file.name}: {str(e)}")
+        except UnicodeDecodeError:
+            try:
+                content = file.getvalue().decode('latin-1')
+                return self.process_report(content, report_date, file.name)
+            except Exception as e:
+                raise ValueError(f"Error processing file {file.name}: {str(e)}")
 
     def process_report(self, report_content, report_date, filename=""):
         """Process individual report with temporal tracking"""
-        # Convert report_date to string if it's a datetime object for consistent handling
+        # Convert report_date to string if it's a datetime object
         if isinstance(report_date, datetime):
             report_date = report_date.strftime('%Y-%m-%d')
         
@@ -155,62 +92,11 @@ class MedicalReportAnalyzer:
             'lab_results': self.extract_lab_results(doc)
         }
         
-        # Use Gemini AI for enhanced analysis if available
-        if self.use_gemini and self.gemini_model:
-            gemini_insights = self.get_gemini_insights(report_content)
-            report_data['gemini_insights'] = gemini_insights
-        
         self.reports.append(report_data)
         self.update_temporal_analysis(report_data)
         self.update_disease_network(report_data['diseases'])
         
         return report_data
-
-    def get_gemini_insights(self, report_content):
-        """Use Gemini AI to extract additional insights from the report"""
-        try:
-            prompt = f"""
-            As a medical AI assistant, analyze the following medical report and provide insights:
-            1. Identify any diseases, conditions, or health concerns that may not be explicitly mentioned
-            2. Identify potential risk factors based on the patient's profile
-            3. Suggest possible connections between symptoms or conditions
-            4. Identify potential treatment recommendations or medication adjustments
-            5. Format your response as a structured JSON with these categories
-            
-            Medical Report:
-            {report_content}
-            
-            Respond with a JSON object with these keys: 
-            "identified_conditions", "potential_risks", "condition_connections", "treatment_suggestions"
-            """
-            
-            response = self.gemini_model.generate_content(prompt)
-            
-            # Process the response to extract JSON
-            response_text = response.text
-            
-            # Find JSON content (assuming it's enclosed in ```json and ```)
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', response_text)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                # Try to find any JSON-like structure
-                json_match = re.search(r'(\{[\s\S]*\})', response_text)
-                if json_match:
-                    json_str = json_match.group(1)
-                else:
-                    json_str = response_text
-            
-            try:
-                insights = json.loads(json_str)
-                return insights
-            except json.JSONDecodeError:
-                # If JSON parsing fails, return the raw text
-                return {"raw_insights": response_text}
-                
-        except Exception as e:
-            st.warning(f"Gemini AI analysis error: {str(e)}")
-            return {"error": str(e)}
 
     def extract_diseases(self, doc):
         """Extract diseases using NLP"""
@@ -241,8 +127,8 @@ class MedicalReportAnalyzer:
         vital_patterns = {
             'blood_pressure': r'bp[:\s]*(\d+/\d+)',
             'heart_rate': r'hr[:\s]*(\d+)',
-            'temperature': r'temp[:\s](\d+\.?\d)',
-            'bmi': r'bmi[:\s](\d+\.?\d)'
+            'temperature': r'temp[:\s](\d+\.?\d*)',
+            'bmi': r'bmi[:\s](\d+\.?\d*)'
         }
         
         for vital, pattern in vital_patterns.items():
@@ -284,8 +170,7 @@ class MedicalReportAnalyzer:
                 'diseases': set(),
                 'risk_factors': set(),
                 'lab_trends': {},
-                'medication_changes': [],
-                'gemini_insights': []
+                'medication_changes': []
             }
         
         self.temporal_data[date]['diseases'].update(report_data['diseases'])
@@ -299,10 +184,6 @@ class MedicalReportAnalyzer:
             if lab not in self.temporal_data[date]['lab_trends']:
                 self.temporal_data[date]['lab_trends'][lab] = []
             self.temporal_data[date]['lab_trends'][lab].append(data['value'])
-        
-        # Add Gemini insights if available
-        if 'gemini_insights' in report_data:
-            self.temporal_data[date]['gemini_insights'].append(report_data['gemini_insights'])
 
     def update_disease_network(self, diseases):
         """Update disease correlation network"""
@@ -345,32 +226,9 @@ class MedicalReportAnalyzer:
                         if disease not in current_diseases:
                             risk_scores[disease] += 0.5
         
-        # Include Gemini insights for prediction enhancement if available
-        if self.use_gemini:
-            for date in self.temporal_data:
-                for insight_data in self.temporal_data[date].get('gemini_insights', []):
-                    if isinstance(insight_data, dict):
-                        # Process potential_risks from Gemini
-                        potential_risks = insight_data.get('potential_risks', [])
-                        if isinstance(potential_risks, list):
-                            for risk in potential_risks:
-                                for disease_category, diseases in self.disease_patterns.items():
-                                    for disease in diseases:
-                                        if disease in str(risk).lower() and disease not in current_diseases:
-                                            risk_scores[disease] += 0.75
-                        
-                        # Process identified_conditions from Gemini
-                        conditions = insight_data.get('identified_conditions', [])
-                        if isinstance(conditions, list):
-                            for condition in conditions:
-                                for disease_category, diseases in self.disease_patterns.items():
-                                    for disease in diseases:
-                                        if disease in str(condition).lower() and disease not in current_diseases:
-                                            risk_scores[disease] += 0.5
-        
         predictions = []
         for disease, score in sorted(risk_scores.items(), key=lambda x: x[1], reverse=True):
-            if score > 0.5:  # Lower threshold to include more predictions
+            if score > 0.5:  # Threshold for predictions
                 predictions.append({
                     'disease': disease,
                     'risk_score': score,
@@ -406,8 +264,8 @@ class MedicalReportAnalyzer:
                         'correlation': correlation,
                         'significance': p_value
                     }
-                except Exception as e:
-                    st.warning(f"Could not analyze trend for {lab}: {str(e)}")
+                except Exception:
+                    pass # Skip if correlation can't be calculated
         
         return results
 
@@ -436,21 +294,6 @@ class MedicalReportAnalyzer:
                     'trend': trend['trend']
                 })
         
-        # Include Gemini insights as contributing factors if available
-        if self.use_gemini:
-            for date in self.temporal_data:
-                for insight_data in self.temporal_data[date].get('gemini_insights', []):
-                    if isinstance(insight_data, dict):
-                        connections = insight_data.get('condition_connections', [])
-                        if isinstance(connections, list):
-                            for connection in connections:
-                                if disease.lower() in str(connection).lower():
-                                    factors.append({
-                                        'type': 'gemini_insight',
-                                        'insight_type': 'condition_connection',
-                                        'detail': str(connection)
-                                    })
-        
         return factors
 
     def generate_visualization(self):
@@ -477,8 +320,8 @@ class MedicalReportAnalyzer:
                     title='Disease Progression Timeline'
                 )
                 figures.append(fig)
-            except Exception as e:
-                st.warning(f"Could not generate timeline visualization: {str(e)}")
+            except Exception:
+                pass # Skip if timeline can't be generated
         
         # Risk factor distribution
         risk_counts = defaultdict(int)
@@ -501,7 +344,7 @@ class MedicalReportAnalyzer:
             )
             figures.append(fig)
         
-        # Disease network visualization using Plotly
+        # Disease network visualization
         if len(self.disease_network.nodes) > 0:
             try:
                 # Calculate node positions using networkx
@@ -510,14 +353,12 @@ class MedicalReportAnalyzer:
                 # Create edges trace
                 edge_x = []
                 edge_y = []
-                edge_weights = []
                 
-                for edge in self.disease_network.edges(data=True):
+                for edge in self.disease_network.edges():
                     x0, y0 = pos[edge[0]]
                     x1, y1 = pos[edge[1]]
                     edge_x.extend([x0, x1, None])
                     edge_y.extend([y0, y1, None])
-                    edge_weights.append(edge[2]['weight'])
                 
                 edges_trace = go.Scatter(
                     x=edge_x, y=edge_y,
@@ -568,73 +409,10 @@ class MedicalReportAnalyzer:
                                 yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
                                 )
                 figures.append(fig)
-            except Exception as e:
-                st.warning(f"Could not generate disease network visualization: {str(e)}")
+            except Exception:
+                pass # Skip if network visualization can't be generated
         
         return figures
-
-    def generate_gemini_summary(self):
-        """Generate a comprehensive summary using Gemini AI"""
-        if not self.use_gemini or not self.gemini_model:
-            return "Gemini AI is not enabled or initialized."
-        
-        try:
-            # Prepare the data for Gemini
-            diseases = set()
-            risk_factors = set()
-            medications = []
-            all_insights = []
-            
-            for report in self.reports:
-                diseases.update(report['diseases'])
-                medications.extend(report['medications'])
-                for risk in report['risk_factors']:
-                    risk_factors.add(f"{risk['category']}: {risk['factor']}")
-                
-                if 'gemini_insights' in report:
-                    all_insights.append(report['gemini_insights'])
-            
-            # Prepare prediction data
-            predictions = self.predict_future_diseases()
-            pred_text = []
-            for pred in predictions:
-                factors = []
-                for factor in pred['contributing_factors']:
-                    if factor['type'] == 'risk_factor':
-                        factors.append(f"{factor['category']}: {factor['factor']}")
-                    elif factor['type'] == 'lab_trend':
-                        factors.append(f"Lab {factor['lab']}: {factor['trend']} trend")
-                    elif factor['type'] == 'gemini_insight':
-                        factors.append(f"AI insight: {factor['detail']}")
-                
-                pred_text.append(f"Disease: {pred['disease']}, Risk Score: {pred['risk_score']:.2f}, Factors: {', '.join(factors)}")
-            
-            prompt = f"""
-            As a medical AI assistant, generate a comprehensive summary of the patient's health based on the following data:
-            
-            Diseases: {', '.join(diseases)}
-            Risk Factors: {', '.join(risk_factors)}
-            Medications: {[f"{m['name']} {m['dosage']}{m['unit']}" for m in medications]}
-            Predictions: {'; '.join(pred_text)}
-            
-            Additional AI Insights: {json.dumps(all_insights)}
-            
-            Please provide:
-            1. A concise executive summary of the patient's overall health
-            2. Key health concerns and their possible interactions
-            3. Suggested preventive measures based on the risk factors
-            4. Potential treatment options to discuss with healthcare providers
-            5. Long-term monitoring recommendations
-            
-            Format your response in Markdown with clear sections and bullet points where appropriate.
-            """
-            
-            response = self.gemini_model.generate_content(prompt)
-            return response.text
-            
-        except Exception as e:
-            return f"Error generating Gemini summary: {str(e)}"
-
 
 def create_sample_data():
     """Create sample medical data for demo purposes"""
@@ -694,17 +472,14 @@ def create_sample_data():
     }
 
 def main():
-    st.set_page_config(page_title="Predictive Medical Analyzer with Gemini AI", layout="wide")
+    st.set_page_config(page_title="Medical Report Analyzer", layout="wide")
     
-    st.title("🏥 Predictive Medical Report Analyzer")
-    st.markdown("Upload medical reports for AI-powered predictive analysis")
+    st.title("🏥 Medical Report Analyzer")
+    st.markdown("Upload medical reports for AI-powered analysis and predictions")
     
-    # Add option to enable Gemini AI
+    # Sidebar for app info
     with st.sidebar:
-        st.header("⚙️ Settings")
-        use_gemini = st.toggle("Enable Gemini AI", value=True, help="Use Google's Gemini AI for enhanced analysis")
-        
-        st.header("ℹ About")
+        st.header("ℹ️ About")
         st.markdown("""
         This tool analyzes medical reports to:
         - Track disease progression
@@ -712,12 +487,8 @@ def main():
         - Predict potential future health risks
         - Analyze lab result trends
         
-        **Now with Gemini AI integration** for advanced medical insights and predictions.
-        
-        *Supported File Types:*
+        *Supported File Type:*
         - Text files (.txt)
-        - PDF documents (.pdf)
-        - Word documents (.doc, .docx)
         
         *Note:* All analysis is for informational purposes only and should be verified by healthcare professionals.
         """)
@@ -727,16 +498,16 @@ def main():
             if 'analyzer' in st.session_state:
                 del st.session_state.analyzer
                 st.success("Analyzer reset successfully!")
-                st.experimental_rerun()
+                st.rerun()
     
-    # Initialize the analyzer with Gemini option
+    # Initialize the analyzer
     if 'analyzer' not in st.session_state:
         try:
-            st.session_state.analyzer = MedicalReportAnalyzer(use_gemini=use_gemini)
+            st.session_state.analyzer = MedicalReportAnalyzer()
         except Exception as e:
             st.error(f"Error initializing analyzer: {str(e)}")
             st.error("Make sure all dependencies are installed correctly.")
-            st.info("To install dependencies, run: `pip install streamlit pandas numpy scikit-learn spacy plotly scipy networkx PyPDF2 python-docx google-generativeai`")
+            st.info("To install dependencies, run: `pip install streamlit pandas numpy spacy plotly scipy networkx`")
             return
     
     # Create tabs for different functions
@@ -744,9 +515,10 @@ def main():
     
     with tab1:
         st.header("Upload Medical Reports")
+        st.caption("Note: Currently only supporting .txt files for simplified processing")
         uploaded_files = st.file_uploader(
             "Upload Medical Reports",
-            type=['txt', 'pdf', 'doc', 'docx'],
+            type=['txt'],
             accept_multiple_files=True
         )
         
@@ -806,8 +578,6 @@ def main():
                                         st.markdown(f"- Risk Factor: {factor['category']} - {factor['factor']}")
                                     elif factor['type'] == 'lab_trend':
                                         st.markdown(f"- Lab Trend: {factor['lab']} showing {factor['trend']} pattern")
-                                    elif factor['type'] == 'gemini_insight':
-                                        st.markdown(f"- Gemini AI Insight: {factor['detail']}")
                     else:
                         st.info("No significant disease predictions found with the current data.")
             
@@ -835,19 +605,13 @@ def main():
                         st.plotly_chart(figures[i], use_container_width=True)
             else:
                 st.info("No visualizations could be generated with the current data.")
-            
-            if st.session_state.analyzer.use_gemini and st.session_state.analyzer.gemini_model:
-                st.subheader("Gemini AI Health Summary")
-                with st.spinner("Generating comprehensive health summary with Gemini AI..."):
-                    summary = st.session_state.analyzer.generate_gemini_summary()
-                    st.markdown(summary)
     
     with tab3:
         st.header("Try Demo Data")
         st.markdown("Use sample medical reports to see how the analyzer works.")
         
         if st.button("Load Demo Data"):
-            st.session_state.analyzer = MedicalReportAnalyzer(use_gemini=use_gemini)
+            st.session_state.analyzer = MedicalReportAnalyzer()
             
             sample_data = create_sample_data()
             progress_bar = st.progress(0)
@@ -874,6 +638,6 @@ def main():
                 progress_bar.progress((i + 1) / len(sample_data))
             
             st.success("Demo data loaded! Go to the Analysis tab to see results.")
-            
+
 if __name__ == "__main__":
     main()
