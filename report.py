@@ -801,12 +801,79 @@ def main():
                             exp = st.expander(f"🔍 {pred['disease'].title()} (Risk Score: {pred['risk_score']:.2f})")
                             with exp:
                                 st.markdown("**Contributing Factors:**")
-                            for factor in pred['contributing_factors']:
-                                if factor['type'] == 'risk_factor':
-                                    st.markdown(f"- Risk Factor: {factor['category']} - {factor['factor']}")
-                                elif factor['type'] == 'lab_trend':
-                                    st.markdown(f"- Lab Trend: {factor['lab']} showing {factor['trend']} pattern")
-                                elif factor['type'] == 'gemini_insight':
-                                    st.markdown(f"- Gemini AI Insight: {factor['detail']}")
-                                else:
-                    st.info("No significant disease predictions found with the current data.")
+                                for factor in pred['contributing_factors']:
+                                    if factor['type'] == 'risk_factor':
+                                        st.markdown(f"- Risk Factor: {factor['category']} - {factor['factor']}")
+                                    elif factor['type'] == 'lab_trend':
+                                        st.markdown(f"- Lab Trend: {factor['lab']} showing {factor['trend']} pattern")
+                                    elif factor['type'] == 'gemini_insight':
+                                        st.markdown(f"- Gemini AI Insight: {factor['detail']}")
+                    else:
+                        st.info("No significant disease predictions found with the current data.")
+            
+            with col2:
+                st.subheader("Disease Progression")
+                timeline_data = []
+                for date in sorted(st.session_state.analyzer.temporal_data.keys()):
+                    for disease in st.session_state.analyzer.temporal_data[date]['diseases']:
+                        timeline_data.append({
+                            'date': date,
+                            'disease': disease
+                        })
+                
+                if timeline_data:
+                    st.dataframe(pd.DataFrame(timeline_data), use_container_width=True)
+                else:
+                    st.info("No disease progression data available.")
+            
+            st.subheader("Visualizations")
+            figures = st.session_state.analyzer.generate_visualization()
+            if figures:
+                tabs = st.tabs([f"Chart {i+1}" for i in range(len(figures))])
+                for i, tab in enumerate(tabs):
+                    with tab:
+                        st.plotly_chart(figures[i], use_container_width=True)
+            else:
+                st.info("No visualizations could be generated with the current data.")
+            
+            if st.session_state.analyzer.use_gemini and st.session_state.analyzer.gemini_model:
+                st.subheader("Gemini AI Health Summary")
+                with st.spinner("Generating comprehensive health summary with Gemini AI..."):
+                    summary = st.session_state.analyzer.generate_gemini_summary()
+                    st.markdown(summary)
+    
+    with tab3:
+        st.header("Try Demo Data")
+        st.markdown("Use sample medical reports to see how the analyzer works.")
+        
+        if st.button("Load Demo Data"):
+            st.session_state.analyzer = MedicalReportAnalyzer(use_gemini=use_gemini)
+            
+            sample_data = create_sample_data()
+            progress_bar = st.progress(0)
+            
+            for i, (filename, content) in enumerate(sample_data.items()):
+                # Create a BytesIO object with the content
+                file_obj = io.BytesIO(content.encode())
+                file_obj.name = filename
+                
+                # Process the sample file
+                date_str = re.search(r'Date:\s*(\d{4}-\d{2}-\d{2})', content)
+                if date_str:
+                    report_date = datetime.strptime(date_str.group(1), '%Y-%m-%d')
+                else:
+                    report_date = datetime.now()
+                
+                try:
+                    st.session_state.analyzer.process_report(content, report_date, filename)
+                    st.success(f"Successfully processed {filename}")
+                except Exception as e:
+                    st.error(f"Error processing {filename}: {str(e)}")
+                
+                # Update progress bar
+                progress_bar.progress((i + 1) / len(sample_data))
+            
+            st.success("Demo data loaded! Go to the Analysis tab to see results.")
+            
+if __name__ == "__main__":
+    main()
