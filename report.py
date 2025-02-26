@@ -797,10 +797,10 @@ def main():
                     predictions = st.session_state.analyzer.predict_future_diseases()
                     
                     if predictions:
-                      for pred in predictions:
+                        for pred in predictions:
                             exp = st.expander(f"🔍 {pred['disease'].title()} (Risk Score: {pred['risk_score']:.2f})")
                             with exp:
-                            st.markdown("**Contributing Factors:**")
+                                st.markdown("**Contributing Factors:**")
                             for factor in pred['contributing_factors']:
                                 if factor['type'] == 'risk_factor':
                                     st.markdown(f"- Risk Factor: {factor['category']} - {factor['factor']}")
