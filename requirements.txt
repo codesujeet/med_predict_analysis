@@ -8,7 +8,3 @@ networkx
 scipy
 PyPDF2
 python-docx
-google-generativeai
-spacy
-en-core-web-sm
-en-core-web-md
