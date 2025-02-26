@@ -4,9 +4,7 @@ numpy
 scikit-learn
 spacy
 plotly
-networkx
 scipy
+networkx
 PyPDF2
 python-docx
-spacy
-en-core-web-sm

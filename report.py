@@ -17,6 +17,7 @@ from collections import defaultdict
 import io
 import PyPDF2
 import docx
+import subprocess  # Added missing import
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -54,8 +55,8 @@ class MedicalReportAnalyzer:
             import spacy
             self.nlp = spacy.load("en_core_web_sm")
         except OSError:
-            import os
-            os.system("python -m spacy download en_core_web_sm")
+            import subprocess  # Added import inside the class method
+            subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
             self.nlp = spacy.load("en_core_web_sm")
         except Exception as e:
             st.error(f"Error loading spaCy model: {str(e)}")
@@ -123,6 +124,10 @@ class MedicalReportAnalyzer:
 
     def process_report(self, report_content, report_date):
         """Process individual report with temporal tracking"""
+        # Convert report_date to string if it's a datetime object for consistent handling
+        if isinstance(report_date, datetime):
+            report_date = report_date.strftime('%Y-%m-%d')
+        
         doc = self.nlp(report_content.lower())
         
         report_data = {
@@ -296,15 +301,18 @@ class MedicalReportAnalyzer:
         results = {}
         for lab, data in lab_trends.items():
             if len(data['values']) > 2:
-                correlation, p_value = pearsonr(
-                    range(len(data['values'])),
-                    data['values']
-                )
-                results[lab] = {
-                    'trend': 'increasing' if correlation > 0 else 'decreasing',
-                    'correlation': correlation,
-                    'significance': p_value
-                }
+                try:
+                    correlation, p_value = pearsonr(
+                        range(len(data['values'])),
+                        data['values']
+                    )
+                    results[lab] = {
+                        'trend': 'increasing' if correlation > 0 else 'decreasing',
+                        'correlation': correlation,
+                        'significance': p_value
+                    }
+                except Exception as e:
+                    st.warning(f"Could not analyze trend for {lab}: {str(e)}")
         
         return results
 
@@ -350,14 +358,17 @@ class MedicalReportAnalyzer:
         
         if timeline_data:
             df = pd.DataFrame(timeline_data)
-            fig = px.timeline(
-                df,
-                x_start='date',
-                x_end='date',
-                y='disease',
-                title='Disease Progression Timeline'
-            )
-            figures.append(fig)
+            try:
+                fig = px.timeline(
+                    df,
+                    x_start='date',
+                    x_end='date',
+                    y='disease',
+                    title='Disease Progression Timeline'
+                )
+                figures.append(fig)
+            except Exception as e:
+                st.warning(f"Could not generate timeline visualization: {str(e)}")
         
         # Risk factor distribution
         risk_counts = defaultdict(int)
@@ -390,7 +401,13 @@ def main():
     
     # Initialize the analyzer
     if 'analyzer' not in st.session_state:
-        st.session_state.analyzer = MedicalReportAnalyzer()
+        try:
+            st.session_state.analyzer = MedicalReportAnalyzer()
+        except Exception as e:
+            st.error(f"Error initializing analyzer: {str(e)}")
+            st.error("Make sure all dependencies are installed correctly.")
+            st.info("To install dependencies, run: `pip install streamlit pandas numpy scikit-learn spacy plotly scipy networkx PyPDF2 python-docx`")
+            return
     
     # File upload with dates
     uploaded_files = st.file_uploader(
@@ -400,63 +417,79 @@ def main():
     )
     
     if uploaded_files:
-        for file in uploaded_files:
-            # Add date input for each file
-            report_date = st.date_input(
-                f"Date for {file.name}",
-                datetime.now()
-            )
+        report_dates = {}
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            for i, file in enumerate(uploaded_files):
+                report_dates[file.name] = st.date_input(
+                    f"Date for {file.name}",
+                    datetime.now()
+                )
+        
+        with col2:
+            st.write("Files to process:")
+            for file in uploaded_files:
+                st.write(f"- {file.name}")
+        
+        if st.button("Process Reports"):
+            progress_bar = st.progress(0)
             
-            try:
-                # Process file with proper error handling
-                st.session_state.analyzer.process_file(file, report_date)
-                st.success(f"Successfully processed {file.name}")
-            except Exception as e:
-                st.error(f"Error processing {file.name}: {str(e)}")
-                continue
+            for i, file in enumerate(uploaded_files):
+                try:
+                    # Process file with proper error handling
+                    st.session_state.analyzer.process_file(file, report_dates[file.name])
+                    st.success(f"Successfully processed {file.name}")
+                except Exception as e:
+                    st.error(f"Error processing {file.name}: {str(e)}")
+                    continue
+                
+                # Update progress bar
+                progress_bar.progress((i + 1) / len(uploaded_files))
         
         if st.button("Generate Predictive Analysis"):
-            st.subheader("Predicted Future Health Risks")
-            predictions = st.session_state.analyzer.predict_future_diseases()
-            
-            if predictions:
-                for pred in predictions:
-                    with st.expander(f"🔍 {pred['disease'].title()} - Risk Score: {pred['risk_score']:.2f}"):
-                        st.write("*Contributing Factors:*")
-                        for factor in pred['contributing_factors']:
-                            if factor['type'] == 'risk_factor':
-                              st.write(f"- {factor['category'].title()}: {factor['factor']}")
-                            else:
-                                st.write(f"- Lab {factor['lab']}: {factor['trend']} trend")
-            else:
-                st.info("No significant disease risks predicted based on current data.")
-            
-            # Show visualizations
-            st.subheader("Analysis Visualizations")
-            figures = st.session_state.analyzer.generate_visualization()
-            for fig in figures:
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Download full report
-            report = {
-                'predictions': predictions,
-                'temporal_analysis': {
-                    str(date): {
-                        'diseases': list(data['diseases']),
-                        'risk_factors': list(data['risk_factors']),
-                        'lab_trends': {k: v for k, v in data['lab_trends'].items()}
-                    }
-                    for date, data in st.session_state.analyzer.temporal_data.items()
-                },
-                'generated_date': datetime.now().isoformat()
-            }
-            
-            st.download_button(
-                "📥 Download Full Analysis Report",
-                json.dumps(report, indent=2),
-                file_name="predictive_medical_analysis.json",
-                mime="application/json"
-            )
+            with st.spinner("Generating analysis..."):
+                st.subheader("Predicted Future Health Risks")
+                predictions = st.session_state.analyzer.predict_future_diseases()
+                
+                if predictions:
+                    for pred in predictions:
+                        with st.expander(f"🔍 {pred['disease'].title()} - Risk Score: {pred['risk_score']:.2f}"):
+                            st.write("*Contributing Factors:*")
+                            for factor in pred['contributing_factors']:
+                                if factor['type'] == 'risk_factor':
+                                  st.write(f"- {factor['category'].title()}: {factor['factor']}")
+                                else:
+                                    st.write(f"- Lab {factor['lab']}: {factor['trend']} trend")
+                else:
+                    st.info("No significant disease risks predicted based on current data.")
+                
+                # Show visualizations
+                st.subheader("Analysis Visualizations")
+                figures = st.session_state.analyzer.generate_visualization()
+                for fig in figures:
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Download full report
+                report = {
+                    'predictions': predictions,
+                    'temporal_analysis': {
+                        str(date): {
+                            'diseases': list(data['diseases']),
+                            'risk_factors': list(data['risk_factors']),
+                            'lab_trends': {k: v for k, v in data['lab_trends'].items()}
+                        }
+                        for date, data in st.session_state.analyzer.temporal_data.items()
+                    },
+                    'generated_date': datetime.now().isoformat()
+                }
+                
+                st.download_button(
+                    "📥 Download Full Analysis Report",
+                    json.dumps(report, indent=2),
+                    file_name="predictive_medical_analysis.json",
+                    mime="application/json"
+                )
     
     # Add sidebar with information
     with st.sidebar:
@@ -478,6 +511,13 @@ def main():
         
         st.header("🔧 Settings")
         st.markdown("Future updates will include customizable analysis parameters.")
+        
+        # Add reset button
+        if st.button("Reset Analyzer"):
+            if 'analyzer' in st.session_state:
+                del st.session_state.analyzer
+                st.success("Analyzer reset successfully!")
+                st.experimental_rerun()
     
     # Footer
     st.markdown("---")
