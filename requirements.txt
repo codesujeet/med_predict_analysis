@@ -8,3 +8,5 @@ networkx
 scipy
 PyPDF2
 python-docx
+spacy
+en-core-web-sm
